@@ -28,15 +28,17 @@ io.on('connection', (socket) => {
     io.to(`pair-${pairKey}`).emit('presence', { role, online: true });
   });
 
-  socket.on('urgent-message', ({ pairKey, text }) => {
+  socket.on('urgent-message', ({ pairKey, text, messageId }) => {
     if (!pairKey || !text) return;
     const payload = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      // 교사 앱이 만든 messageId를 그대로 써서, 나중에 "확인" 신호가
+      // 교사 앱의 목록에 있는 정확한 메시지에 매칭되도록 함
+      id: messageId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       text,
       time: Date.now(),
     };
     io.to(`pair-${pairKey}`).emit('urgent-message', payload);
-    console.log(`[발송] pair-${pairKey} <- "${text}"`);
+    console.log(`[발송] pair-${pairKey} <- "${text}" (id=${payload.id})`);
   });
 
   socket.on('ack', ({ pairKey, messageId }) => {

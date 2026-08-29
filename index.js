@@ -14,25 +14,40 @@ const io = new Server(server, { cors: { origin: '*' } });
 
 // "연결 코드"(pairKey) 단위로 방을 나눔.
 // 교사용 앱과 교실용 앱이 같은 pairKey를 쓰면 서로 연결됨.
-// 같은 서버를 여러 학급이 나눠 써도 코드가 다르면 서로 섞이지 않음.
+
+// pairKey별로 teacher/classroom 소켓이 지금 붙어있는지 서버가 기억함.
+// (이걸 기억하지 않으면, 나중에 접속한 쪽이 "상대방이 이미 연결돼 있다"는
+//  사실을 영영 알 수 없는 문제가 있었음 - 그래서 "대기 중"이 안 풀렸던 것)
+const pairRooms = new Map(); // pairKey -> { teacher: socketId|null, classroom: socketId|null }
+
+function getRoom(pairKey) {
+  if (!pairRooms.has(pairKey)) pairRooms.set(pairKey, { teacher: null, classroom: null });
+  return pairRooms.get(pairKey);
+}
 
 io.on('connection', (socket) => {
   socket.on('join', ({ pairKey, role }) => {
-    if (!pairKey) return;
+    if (!pairKey || !role) return;
     socket.join(`pair-${pairKey}`);
     socket.data.pairKey = pairKey;
     socket.data.role = role;
+
+    const room = getRoom(pairKey);
+    room[role] = socket.id;
     console.log(`[연결] ${socket.id} (${role}) -> pair-${pairKey}`);
 
-    // 교실 앱이 붙으면 교사 앱에게 "연결됨" 상태를 알려줌
+    // 1) 방 전체에 "이 역할이 지금 온라인이다"라고 알림
     io.to(`pair-${pairKey}`).emit('presence', { role, online: true });
+
+    // 2) 방금 들어온 소켓에게는, 상대방이 이미 접속해 있는지 현재 상태를 바로 알려줌
+    //    (상대방이 먼저 켜져 있었어도 놓치지 않도록)
+    const otherRole = role === 'teacher' ? 'classroom' : 'teacher';
+    socket.emit('presence', { role: otherRole, online: !!room[otherRole] });
   });
 
   socket.on('urgent-message', ({ pairKey, text, messageId }) => {
     if (!pairKey || !text) return;
     const payload = {
-      // 교사 앱이 만든 messageId를 그대로 써서, 나중에 "확인" 신호가
-      // 교사 앱의 목록에 있는 정확한 메시지에 매칭되도록 함
       id: messageId || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       text,
       time: Date.now(),
@@ -47,8 +62,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    if (socket.data.pairKey) {
-      io.to(`pair-${socket.data.pairKey}`).emit('presence', { role: socket.data.role, online: false });
+    const { pairKey, role } = socket.data;
+    if (pairKey && role) {
+      const room = getRoom(pairKey);
+      // 재연결 등으로 이미 다른 소켓이 같은 role을 차지했다면 지우지 않음
+      if (room[role] === socket.id) {
+        room[role] = null;
+        io.to(`pair-${pairKey}`).emit('presence', { role, online: false });
+      }
     }
     console.log(`[연결 종료] ${socket.id}`);
   });
